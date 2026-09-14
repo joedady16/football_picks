@@ -1,0 +1,178 @@
+@page "/ingest"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using NflPicks.Web.Data
+@using NflPicks.Web.Services.ESPN
+@using NflPicks.Web.Services.Espn
+@inject ScheduleIngestService Ingest
+@inject IDbContextFactory<PicksDbContext> DbFactory
+
+<PageTitle>Schedule ingest</PageTitle>
+
+<h3>Pull a week's schedule</h3>
+
+<p>
+    Safe to re-run. Lines and consensus percentages are never touched, and a
+    score you corrected by hand is never overwritten.
+</p>
+
+<div class="row g-2 mb-3" style="max-width:480px">
+    <div class="col">
+        <label class="form-label">Season</label>
+        <input class="form-control" type="number" @bind="seasonYear" />
+    </div>
+    <div class="col">
+        <label class="form-label">Type</label>
+        <select class="form-select" @bind="seasonType">
+            <option value="1">Pre</option>
+            <option value="2">Regular</option>
+            <option value="3">Post</option>
+        </select>
+    </div>
+    <div class="col">
+        <label class="form-label">Week</label>
+        <input class="form-control" type="number" @bind="weekNumber" />
+    </div>
+</div>
+
+<button class="btn btn-primary" @onclick="Run" disabled="@busy">
+    @(busy ? "Pulling..." : "Pull schedule")
+</button>
+
+@if (fatal is not null)
+{
+    <p style="color:#b00" class="mt-3"><strong>Failed:</strong> @fatal</p>
+}
+
+@if (report is not null)
+{
+    <div class="mt-3">
+        @if (report.Committed)
+        {
+            <p>
+                <strong>@report.GamesCreated created</strong>,
+                @report.GamesUpdated updated,
+                @report.TeamIdsBackfilled ESPN team ids backfilled.
+                @if (report.TiebreakGame is not null)
+                {
+                    <span>Tiebreak game: @report.TiebreakGame.</span>
+                }
+            </p>
+        }
+        else
+        {
+            <p style="color:#b00">
+                <strong>Rolled back.</strong> Nothing was written.
+            </p>
+        }
+
+        @if (report.Errors.Count > 0)
+        {
+            <ul style="color:#b00">
+                @foreach (var e in report.Errors) { <li>@e</li> }
+            </ul>
+        }
+
+        @if (report.Warnings.Count > 0)
+        {
+            <ul style="color:#a60">
+                @foreach (var w in report.Warnings) { <li>@w</li> }
+            </ul>
+        }
+    </div>
+}
+
+@if (games is not null && games.Count > 0)
+{
+    <h5 class="mt-4">Games in this week</h5>
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Kickoff (ET)</th><th>Away</th><th>Home</th>
+                <th>Line</th><th>Public %</th><th>Status</th><th>Score</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var g in games)
+            {
+                <tr>
+                    <td>@g.Kickoff.ToString("ddd HH:mm")</td>
+                    <td>@g.Away</td>
+                    <td>@g.Home</td>
+                    <td>@(g.Line?.ToString() ?? "—")</td>
+                    <td>@(g.PublicPct?.ToString() ?? "—")</td>
+                    <td>@g.Status</td>
+                    <td>@(g.HomeScore is null ? "—" : $"{g.AwayScore}-{g.HomeScore}")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p class="text-muted">
+        Lines showing — are expected right after ingest. Phase 3b is where you
+        enter them, and no pick can be stored until you do.
+    </p>
+}
+
+@code {
+    private record GameRow(DateTime Kickoff, string Away, string Home,
+                           decimal? Line, decimal? PublicPct,
+                           string Status, short? HomeScore, short? AwayScore);
+
+    private short seasonYear = (short)DateTime.Now.Year;
+    private short seasonType = 2;
+    private short weekNumber = 1;
+
+    private IngestReport? report;
+    private List<GameRow>? games;
+    private string? fatal;
+    private bool busy;
+
+    private async Task Run()
+    {
+        busy = true;
+        fatal = null;
+        report = null;
+        games = null;
+
+        try
+        {
+            report = await Ingest.IngestWeekAsync(seasonYear, seasonType, weekNumber);
+            await LoadGames();
+        }
+        catch (Exception ex)
+        {
+            fatal = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task LoadGames()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        var et = TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+        var rows = await (
+            from g in db.Games
+            join w in db.Weeks on g.WeekId equals w.WeekId
+            join h in db.Teams on g.HomeTeamId equals h.TeamId
+            join a in db.Teams on g.AwayTeamId equals a.TeamId
+            where w.SeasonYear == seasonYear
+               && w.SeasonType == seasonType
+               && w.WeekNumber == weekNumber
+            orderby g.KickoffUtc
+            select new
+            {
+                g.KickoffUtc, Away = a.EspnAbbr, Home = h.EspnAbbr,
+                g.GradingLineHome, g.PublicPctHome, g.Status, g.HomeScore, g.AwayScore
+            }).ToListAsync();
+
+        games = rows.Select(r => new GameRow(
+            TimeZoneInfo.ConvertTimeFromUtc(
+                DateTime.SpecifyKind(r.KickoffUtc, DateTimeKind.Utc), et),
+            r.Away, r.Home, r.GradingLineHome, r.PublicPctHome,
+            r.Status, r.HomeScore, r.AwayScore)).ToList();
+    }
+}

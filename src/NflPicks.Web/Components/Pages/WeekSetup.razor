@@ -1,0 +1,524 @@
+@page "/week"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using NflPicks.Web.Data
+@inject IDbContextFactory<PicksDbContext> DbFactory
+
+<PageTitle>Week setup</PageTitle>
+
+<h3>Week setup</h3>
+
+<div class="row g-2 mb-3" style="max-width:720px">
+    <div class="col-auto">
+        <label class="form-label">Season</label>
+        <input class="form-control" type="number" @bind="seasonYear" style="width:110px" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Type</label>
+        <select class="form-select" @bind="seasonType" style="width:120px">
+            <option value="1">Pre</option>
+            <option value="2">Regular</option>
+            <option value="3">Post</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Week</label>
+        <input class="form-control" type="number" @bind="weekNumber" style="width:90px" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Sunday date</label>
+        <input class="form-control" type="date" @bind="sundayDate" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Pool size</label>
+        <input class="form-control" type="number" @bind="poolSize" style="width:100px" />
+    </div>
+    <div class="col-auto d-flex align-items-end">
+        <button class="btn btn-outline-primary" @onclick="LoadWeek" disabled="@busy">Load</button>
+    </div>
+</div>
+
+@if (message is not null)
+{
+    <p style="color:@(isError ? "#b00" : "#060")"><strong>@message</strong></p>
+}
+
+@if (problems.Count > 0)
+{
+    <ul style="color:#b00">
+        @foreach (var p in problems) { <li>@p</li> }
+    </ul>
+}
+
+@if (loaded)
+{
+    <table class="table table-sm align-middle">
+        <thead>
+            <tr>
+                <th>TB</th>
+                <th>Away</th>
+                <th>Home</th>
+                <th>Slot</th>
+                <th>Stored (ET)</th>
+                <th>Line (home)</th>
+                <th>Public % home</th>
+                <th>League % home</th>
+                <th>Away pts</th>
+                <th>Home pts</th>
+                <th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in rows)
+            {
+                <tr>
+                    <td>
+                        <input type="radio" name="tb" checked="@(r.IsTiebreak)"
+                               @onchange="@(() => SetTiebreak(r))" />
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm" @bind="r.AwayTeamId">
+                            <option value="0">—</option>
+                            @foreach (var t in teams)
+                            {
+                                <option value="@t.TeamId">@t.EspnAbbr</option>
+                            }
+                        </select>
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm" @bind="r.HomeTeamId">
+                            <option value="0">—</option>
+                            @foreach (var t in teams)
+                            {
+                                <option value="@t.TeamId">@t.EspnAbbr</option>
+                            }
+                        </select>
+                    </td>
+                    <td>
+                        <select class="form-select form-select-sm" @bind="r.SlotKey">
+                            @foreach (var s in Slots)
+                            {
+                                <option value="@s.Key">@s.Label</option>
+                            }
+                        </select>
+                    </td>
+                    <td class="text-muted" style="white-space:nowrap">
+                        @(r.StoredKickoffEt?.ToString("ddd HH:mm") ?? "—")
+                    </td>
+                    <td>
+                        <input class="form-control form-control-sm" type="number" step="0.5"
+                               style="width:90px" @bind="r.Line" />
+                    </td>
+                    <td>
+                        <input class="form-control form-control-sm" type="number" step="0.1"
+                               style="width:90px" @bind="r.PublicPct" />
+                    </td>
+                    <td>
+                        <input class="form-control form-control-sm" type="number" step="0.1"
+                               style="width:90px" @bind="r.LeaguePct" />
+                    </td>
+                    <td>
+                        <input class="form-control form-control-sm" type="number"
+                               style="width:80px" @bind="r.AwayScore" />
+                    </td>
+                    <td>
+                        <input class="form-control form-control-sm" type="number"
+                               style="width:80px" @bind="r.HomeScore" />
+                    </td>
+                    <td>
+                        <button class="btn btn-sm btn-outline-danger"
+                                @onclick="@(() => rows.Remove(r))">×</button>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <button class="btn btn-outline-secondary me-2" @onclick="AddRow">Add game</button>
+    <button class="btn btn-primary" @onclick="Save" disabled="@busy">
+        @(busy ? "Saving..." : "Save week")
+    </button>
+
+    <p class="text-muted mt-3" style="max-width:760px">
+        Line is always from the <strong>home</strong> team's perspective: −3.5
+        means the home team is favoured by 3.5. Enter it exactly as CBS posted it
+        Tuesday, since that is the number your picks are graded against and it
+        cannot be reconstructed later.
+        Leave scores blank until the game is over; filling both marks it final.
+    </p>
+}
+
+@code {
+    private sealed class Row
+    {
+        public int? GameId { get; set; }
+        public short AwayTeamId { get; set; }
+        public short HomeTeamId { get; set; }
+        public string SlotKey { get; set; } = "sun1300";
+        public decimal? Line { get; set; }
+        public decimal? PublicPct { get; set; }
+        public decimal? LeaguePct { get; set; }
+        public short? HomeScore { get; set; }
+        public short? AwayScore { get; set; }
+        public bool IsTiebreak { get; set; }
+        public string? ExistingScoreSource { get; set; }
+
+        // What the database currently holds, shown next to the slot dropdown
+        // so a bad round-trip is visible instead of silently overwritten.
+        public DateTime? StoredKickoffEt { get; set; }
+
+        // Set during Save so the tiebreak pointer can be written after the
+        // insert, when the database has finally assigned game ids.
+        public Game? Saved { get; set; }
+    }
+
+    private sealed record Slot(string Key, string Label, int DayOffset, int Hour, int Minute);
+
+    // Offsets are days from the week's Sunday. Covers essentially every NFL
+    // kickoff; anything unusual can be nudged in pgAdmin afterwards.
+    private static readonly Slot[] Slots =
+    [
+        new("wed2015", "Wed 8:15p", -4, 20, 15),
+        new("thu2015", "Thu 8:15p", -3, 20, 15),
+        new("fri1500", "Fri 3:00p", -2, 15,  0),
+        new("sat1300", "Sat 1:00p", -1, 13,  0),
+        new("sat1630", "Sat 4:30p", -1, 16, 30),
+        new("sat2015", "Sat 8:15p", -1, 20, 15),
+        new("sun0930", "Sun 9:30a",  0,  9, 30),
+        new("sun1300", "Sun 1:00p",  0, 13,  0),
+        new("sun1605", "Sun 4:05p",  0, 16,  5),
+        new("sun1625", "Sun 4:25p",  0, 16, 25),
+        new("sun2020", "Sun 8:20p",  0, 20, 20),
+        new("mon2015", "Mon 8:15p",  1, 20, 15),
+    ];
+
+    private static readonly TimeZoneInfo Et =
+        TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+    private short seasonYear = (short)DateTime.Now.Year;
+    private short seasonType = 2;
+    private short weekNumber = 1;
+    private DateTime sundayDate = NextSunday();
+    private short? poolSize;
+
+    private List<Team> teams = [];
+    private List<Row> rows = [];
+    private List<string> problems = [];
+    private string? message;
+    private bool isError;
+    private bool loaded;
+    private bool busy;
+
+    private static DateTime NextSunday()
+    {
+        var d = DateTime.Today;
+        while (d.DayOfWeek != DayOfWeek.Sunday) d = d.AddDays(1);
+        return d;
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        teams = await db.Teams.OrderBy(t => t.EspnAbbr).ToListAsync();
+    }
+
+    private void AddRow() => rows.Add(new Row());
+
+    private void SetTiebreak(Row chosen)
+    {
+        foreach (var r in rows) r.IsTiebreak = false;
+        chosen.IsTiebreak = true;
+    }
+
+    private async Task LoadWeek()
+    {
+        busy = true;
+        message = null;
+        problems.Clear();
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            var week = await db.Weeks.FirstOrDefaultAsync(
+                w => w.SeasonYear == seasonYear
+                  && w.SeasonType == seasonType
+                  && w.WeekNumber == weekNumber);
+
+            rows = [];
+
+            if (week is null)
+            {
+                // New week: start with a blank slate rather than guessing.
+                message = "New week. Add games, then save.";
+                isError = false;
+                for (var i = 0; i < 16; i++) AddRow();
+            }
+            else
+            {
+                poolSize = week.PoolSize;
+
+                var games = await db.Games
+                    .Where(g => g.WeekId == week.WeekId)
+                    .OrderBy(g => g.KickoffUtc)
+                    .ToListAsync();
+
+                // Derive the week's Sunday from the stored kickoffs. Trusting
+                // the input box here is what made every slot collapse to the
+                // earliest one: games looked days away from the wrong anchor,
+                // so the "nearest" slot was whichever came first in the list.
+                if (games.Count > 0)
+                {
+                    var etDates = games
+                        .Select(g => TimeZoneInfo.ConvertTimeFromUtc(
+                            DateTime.SpecifyKind(g.KickoffUtc, DateTimeKind.Utc), Et).Date)
+                        .ToList();
+
+                    var sunday = etDates.FirstOrDefault(d => d.DayOfWeek == DayOfWeek.Sunday);
+
+                    if (sunday == default)
+                    {
+                        sunday = etDates.Min();
+                        while (sunday.DayOfWeek != DayOfWeek.Sunday) sunday = sunday.AddDays(1);
+                    }
+
+                    sundayDate = sunday;
+                }
+
+                foreach (var g in games)
+                {
+                    var et = TimeZoneInfo.ConvertTimeFromUtc(
+                        DateTime.SpecifyKind(g.KickoffUtc, DateTimeKind.Utc), Et);
+
+                    rows.Add(new Row
+                    {
+                        GameId = g.GameId,
+                        AwayTeamId = g.AwayTeamId,
+                        HomeTeamId = g.HomeTeamId,
+                        SlotKey = NearestSlot(et),
+                        Line = g.GradingLineHome,
+                        PublicPct = g.PublicPctHome,
+                        LeaguePct = g.LeaguePctHome,
+                        HomeScore = g.HomeScore,
+                        AwayScore = g.AwayScore,
+                        IsTiebreak = week.TiebreakGameId == g.GameId,
+                        ExistingScoreSource = g.ScoreSource,
+                        StoredKickoffEt = et
+                    });
+                }
+
+                message = $"Loaded {games.Count} games.";
+                isError = false;
+
+                if (rows.Count == 0) for (var i = 0; i < 16; i++) AddRow();
+            }
+
+            loaded = true;
+        }
+        catch (Exception ex)
+        {
+            message = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private string NearestSlot(DateTime etTime)
+    {
+        var best = Slots[4];
+        var bestDiff = int.MaxValue;
+
+        foreach (var s in Slots)
+        {
+            var slotMinutes = ((int)s.DayOffset * 24 * 60) + s.Hour * 60 + s.Minute;
+            var dayOffset = (int)(etTime.Date - sundayDate.Date).TotalDays;
+            var rowMinutes = (dayOffset * 24 * 60) + etTime.Hour * 60 + etTime.Minute;
+            var diff = Math.Abs(slotMinutes - rowMinutes);
+
+            if (diff < bestDiff) { bestDiff = diff; best = s; }
+        }
+
+        return best.Key;
+    }
+
+    private DateTime KickoffUtcFor(string slotKey)
+    {
+        var slot = Slots.First(s => s.Key == slotKey);
+
+        var local = sundayDate.Date
+            .AddDays(slot.DayOffset)
+            .AddHours(slot.Hour)
+            .AddMinutes(slot.Minute);
+
+        // Npgsql requires Kind=Utc for timestamptz.
+        return DateTime.SpecifyKind(
+            TimeZoneInfo.ConvertTimeToUtc(
+                DateTime.SpecifyKind(local, DateTimeKind.Unspecified), Et),
+            DateTimeKind.Utc);
+    }
+
+    private bool Validate()
+    {
+        problems.Clear();
+
+        var active = rows.Where(r => r.HomeTeamId != 0 || r.AwayTeamId != 0).ToList();
+
+        foreach (var r in active)
+        {
+            var label = $"{Abbr(r.AwayTeamId)} at {Abbr(r.HomeTeamId)}";
+
+            if (r.HomeTeamId == 0 || r.AwayTeamId == 0)
+                problems.Add($"{label}: both teams are required.");
+
+            if (r.HomeTeamId != 0 && r.HomeTeamId == r.AwayTeamId)
+                problems.Add($"{label}: a team cannot play itself.");
+
+            if (r.PublicPct is < 0 or > 100)
+                problems.Add($"{label}: public % must be 0-100.");
+
+            if (r.LeaguePct is < 0 or > 100)
+                problems.Add($"{label}: league % must be 0-100.");
+
+            if ((r.HomeScore is null) != (r.AwayScore is null))
+                problems.Add($"{label}: enter both scores or neither.");
+        }
+
+        // A team playing twice in a week is always a typo, and it silently
+        // corrupts every per-team stat downstream.
+        var seen = new Dictionary<short, string>();
+        foreach (var r in active)
+        {
+            foreach (var id in new[] { r.HomeTeamId, r.AwayTeamId })
+            {
+                if (id == 0) continue;
+                if (seen.ContainsKey(id))
+                    problems.Add($"{Abbr(id)} appears in more than one game.");
+                else
+                    seen[id] = "";
+            }
+        }
+
+        return problems.Count == 0;
+    }
+
+    private string Abbr(short id) =>
+        teams.FirstOrDefault(t => t.TeamId == id)?.EspnAbbr ?? "?";
+
+    private async Task Save()
+    {
+        busy = true;
+        message = null;
+
+        try
+        {
+            if (!Validate())
+            {
+                message = "Nothing saved.";
+                isError = true;
+                return;
+            }
+
+            await using var db = await DbFactory.CreateDbContextAsync();
+            await using var tx = await db.Database.BeginTransactionAsync();
+
+            var week = await db.Weeks.FirstOrDefaultAsync(
+                w => w.SeasonYear == seasonYear
+                  && w.SeasonType == seasonType
+                  && w.WeekNumber == weekNumber);
+
+            if (week is null)
+            {
+                week = new Week
+                {
+                    SeasonYear = seasonYear,
+                    SeasonType = seasonType,
+                    WeekNumber = weekNumber
+                };
+                db.Weeks.Add(week);
+                await db.SaveChangesAsync();
+            }
+
+            week.PoolSize = poolSize;
+
+            var active = rows.Where(r => r.HomeTeamId != 0 && r.AwayTeamId != 0).ToList();
+            Row? tiebreakRow = null;
+
+            foreach (var r in active)
+            {
+                Game game;
+
+                if (r.GameId is not null)
+                {
+                    game = await db.Games.FirstAsync(g => g.GameId == r.GameId);
+                }
+                else
+                {
+                    game = new Game { WeekId = week.WeekId };
+                    db.Games.Add(game);
+                }
+
+                game.HomeTeamId = r.HomeTeamId;
+                game.AwayTeamId = r.AwayTeamId;
+                game.KickoffUtc = KickoffUtcFor(r.SlotKey);
+                game.GradingLineHome = r.Line;
+                game.PublicPctHome = r.PublicPct;
+                game.LeaguePctHome = r.LeaguePct;
+
+                if (r.PublicPct is not null || r.LeaguePct is not null)
+                    game.PctAsOf = DateTime.UtcNow;
+
+                if (r.HomeScore is not null && r.AwayScore is not null)
+                {
+                    game.HomeScore = r.HomeScore;
+                    game.AwayScore = r.AwayScore;
+                    game.Status = "final";
+                    game.ScoreSource = "manual";
+                    game.ScoresUpdatedAt = DateTime.UtcNow;
+                }
+                else
+                {
+                    game.HomeScore = null;
+                    game.AwayScore = null;
+                    game.Status = "scheduled";
+                }
+
+                if (r.IsTiebreak) tiebreakRow = r;
+
+                r.Saved = game;
+            }
+
+            if (week.SpreadsPostedAt is null && active.Any(r => r.Line is not null))
+                week.SpreadsPostedAt = DateTime.UtcNow;
+
+            await db.SaveChangesAsync();
+
+            // Game ids only exist after the save above.
+            week.TiebreakGameId = tiebreakRow?.Saved?.GameId;
+            await db.SaveChangesAsync();
+
+            await tx.CommitAsync();
+
+            var missing = active.Count(r => r.Line is null);
+
+            message = $"Saved {active.Count} games."
+                + (missing > 0
+                    ? $" {missing} still have no line — picks are blocked on those."
+                    : " All lines set.");
+            isError = false;
+
+            await LoadWeek();
+        }
+        catch (Exception ex)
+        {
+            message = ex.InnerException?.Message ?? ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}
