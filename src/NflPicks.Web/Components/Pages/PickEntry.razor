@@ -1,0 +1,404 @@
+@page "/picks"
+@rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
+@using NflPicks.Web.Data
+@inject IDbContextFactory<PicksDbContext> DbFactory
+
+<PageTitle>Picks</PageTitle>
+
+<h3>Make picks</h3>
+
+<div class="row g-2 mb-3" style="max-width:720px">
+    <div class="col-auto">
+        <label class="form-label">Season</label>
+        <input class="form-control" type="number" @bind="seasonYear" style="width:110px" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Type</label>
+        <select class="form-select" @bind="seasonType" style="width:120px">
+            <option value="1">Pre</option>
+            <option value="2">Regular</option>
+            <option value="3">Post</option>
+        </select>
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Week</label>
+        <input class="form-control" type="number" @bind="weekNumber" style="width:90px" />
+    </div>
+    <div class="col-auto d-flex align-items-end">
+        <button class="btn btn-outline-primary" @onclick="Load" disabled="@busy">Load</button>
+    </div>
+    <div class="col-auto d-flex align-items-end">
+        <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="backfill" @bind="backfill" />
+            <label class="form-check-label" for="backfill">Backfill mode</label>
+        </div>
+    </div>
+</div>
+
+@if (backfill)
+{
+    <p class="text-muted" style="max-width:720px">
+        Kickoff locks are off, so past games can be entered. Use this for catching
+        up on weeks already played, not during a live week — the locks exist to
+        stop you recording a pick CBS would not have accepted.
+    </p>
+}
+
+@if (message is not null)
+{
+    <p style="color:@(isError ? "#b00" : "#060")"><strong>@message</strong></p>
+}
+
+@if (loaded)
+{
+    @if (rows.Count == 0)
+    {
+        <p>No games in this week yet. Set it up on the week page first.</p>
+    }
+    else
+    {
+        <table class="table table-sm align-middle">
+            <thead>
+                <tr>
+                    <th>Kickoff (ET)</th>
+                    <th>Matchup</th>
+                    <th>Line</th>
+                    <th>Public %</th>
+                    <th>Your pick</th>
+                    <th>Result</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var r in rows)
+                {
+                    var locked = r.IsLocked && !backfill;
+
+                    <tr class="@(r.NoLine ? "table-secondary" : null)">
+                        <td style="white-space:nowrap">
+                            @r.KickoffEt.ToString("ddd HH:mm")
+                            @if (locked) { <span class="text-muted"> 🔒</span> }
+                        </td>
+                        <td style="white-space:nowrap">@r.Away at @r.Home</td>
+                        <td>
+                            @if (r.NoLine)
+                            {
+                                <span class="text-muted">no line</span>
+                            }
+                            else
+                            {
+                                @($"{r.Home} {r.Line:+0.0;-0.0;0.0}")
+                            }
+                        </td>
+                        <td>@(r.PublicPct is null ? "—" : $"{r.PublicPct:0.#}% {r.Home}")</td>
+                        <td style="white-space:nowrap">
+                            <button class="btn btn-sm @(r.PickedTeamId == r.AwayTeamId
+                                        ? "btn-primary" : "btn-outline-secondary")"
+                                    disabled="@(locked || r.NoLine)"
+                                    @onclick="@(() => Choose(r, r.AwayTeamId))">
+                                @r.Away @FormatLine(-r.Line)
+                            </button>
+                            <button class="btn btn-sm @(r.PickedTeamId == r.HomeTeamId
+                                        ? "btn-primary" : "btn-outline-secondary")"
+                                    disabled="@(locked || r.NoLine)"
+                                    @onclick="@(() => Choose(r, r.HomeTeamId))">
+                                @r.Home @FormatLine(r.Line)
+                            </button>
+                        </td>
+                        <td>
+                            @if (r.Result is not null)
+                            {
+                                <span style="color:@(r.Result == "win" ? "#060"
+                                                   : r.Result == "loss" ? "#b00" : "#666")">
+                                    @r.Result
+                                </span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        <div class="row g-2 mb-3" style="max-width:420px">
+            <div class="col-auto">
+                <label class="form-label">
+                    Tiebreak: total points@(tiebreakLabel is null ? "" : $" ({tiebreakLabel})")
+                </label>
+                <input class="form-control" type="number" @bind="tiebreakGuess" style="width:140px" />
+            </div>
+        </div>
+
+        <button class="btn btn-primary" @onclick="Save" disabled="@busy">
+            @(busy ? "Saving..." : "Save picks")
+        </button>
+
+        <p class="text-muted mt-3" style="max-width:760px">
+            @madeCount of @rows.Count games picked.
+            Lines are shown from each team's own perspective, so the button you
+            click is the side you are taking.
+        </p>
+    }
+}
+
+@code {
+    private sealed class Row
+    {
+        public int GameId { get; set; }
+        public DateTime KickoffEt { get; set; }
+        public DateTime KickoffUtc { get; set; }
+        public string Home { get; set; } = "";
+        public string Away { get; set; } = "";
+        public short HomeTeamId { get; set; }
+        public short AwayTeamId { get; set; }
+        public decimal Line { get; set; }
+        public bool NoLine { get; set; }
+        public decimal? PublicPct { get; set; }
+        public short? PickedTeamId { get; set; }
+        public short? OriginalPickedTeamId { get; set; }
+        public int? PickId { get; set; }
+        public bool IsLocked { get; set; }
+        public string? Result { get; set; }
+    }
+
+    private static readonly TimeZoneInfo Et =
+        TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+    private short seasonYear = (short)DateTime.Now.Year;
+    private short seasonType = 2;
+    private short weekNumber = 1;
+    private bool backfill;
+
+    private List<Row> rows = [];
+    private int? weekId;
+    private int? entrantId;
+    private int? tiebreakGuess;
+    private string? tiebreakLabel;
+
+    private string? message;
+    private bool isError;
+    private bool loaded;
+    private bool busy;
+
+    private int madeCount => rows.Count(r => r.PickedTeamId is not null);
+
+    private static string FormatLine(decimal line) =>
+        line == 0 ? "PK" : line.ToString("+0.0;-0.0");
+
+    private void Choose(Row r, short teamId)
+    {
+        // Clicking the side you already have clears it, which is the only way
+        // to undo a misclick before saving.
+        r.PickedTeamId = r.PickedTeamId == teamId ? null : teamId;
+    }
+
+    private async Task Load()
+    {
+        busy = true;
+        message = null;
+        rows = [];
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            var me = await db.Entrants.FirstOrDefaultAsync(e => e.IsMe);
+            if (me is null)
+            {
+                message = "No entrant marked is_me. Fix that before picking.";
+                isError = true;
+                return;
+            }
+            entrantId = me.EntrantId;
+
+            var week = await db.Weeks.FirstOrDefaultAsync(
+                w => w.SeasonYear == seasonYear
+                  && w.SeasonType == seasonType
+                  && w.WeekNumber == weekNumber);
+
+            if (week is null)
+            {
+                message = "That week does not exist yet.";
+                isError = true;
+                loaded = true;
+                return;
+            }
+            weekId = week.WeekId;
+
+            var ew = await db.EntrantWeeks.FirstOrDefaultAsync(
+                x => x.WeekId == week.WeekId && x.EntrantId == me.EntrantId);
+            tiebreakGuess = ew?.TiebreakGuess;
+
+            var data = await (
+                from g in db.Games
+                join h in db.Teams on g.HomeTeamId equals h.TeamId
+                join a in db.Teams on g.AwayTeamId equals a.TeamId
+                where g.WeekId == week.WeekId
+                orderby g.KickoffUtc
+                select new
+                {
+                    g.GameId, g.KickoffUtc, g.GradingLineHome, g.PublicPctHome,
+                    g.HomeTeamId, g.AwayTeamId, g.Status, g.HomeScore, g.AwayScore,
+                    Home = h.EspnAbbr, Away = a.EspnAbbr
+                }).ToListAsync();
+
+            var picks = await db.Picks
+                .Where(p => p.EntrantId == me.EntrantId
+                         && data.Select(d => d.GameId).Contains(p.GameId))
+                .ToListAsync();
+
+            var now = DateTime.UtcNow;
+
+            foreach (var d in data)
+            {
+                var pick = picks.FirstOrDefault(p => p.GameId == d.GameId);
+                var kickoffUtc = DateTime.SpecifyKind(d.KickoffUtc, DateTimeKind.Utc);
+
+                string? result = null;
+                if (d.Status == "final" && pick is not null
+                    && d.HomeScore is not null && d.GradingLineHome is not null)
+                {
+                    var margin = pick.PickedTeamId == d.HomeTeamId
+                        ? (d.HomeScore.Value - d.AwayScore!.Value) + d.GradingLineHome.Value
+                        : (d.AwayScore!.Value - d.HomeScore.Value) - d.GradingLineHome.Value;
+
+                    result = margin > 0 ? "win" : margin == 0 ? "push" : "loss";
+                }
+
+                rows.Add(new Row
+                {
+                    GameId = d.GameId,
+                    KickoffUtc = kickoffUtc,
+                    KickoffEt = TimeZoneInfo.ConvertTimeFromUtc(kickoffUtc, Et),
+                    Home = d.Home,
+                    Away = d.Away,
+                    HomeTeamId = d.HomeTeamId,
+                    AwayTeamId = d.AwayTeamId,
+                    Line = d.GradingLineHome ?? 0,
+                    NoLine = d.GradingLineHome is null,
+                    PublicPct = d.PublicPctHome,
+                    PickedTeamId = pick?.PickedTeamId,
+                    OriginalPickedTeamId = pick?.PickedTeamId,
+                    PickId = pick?.PickId,
+                    IsLocked = kickoffUtc <= now,
+                    Result = result
+                });
+            }
+
+            if (week.TiebreakGameId is not null)
+            {
+                var tb = rows.FirstOrDefault(r => r.GameId == week.TiebreakGameId);
+                tiebreakLabel = tb is null ? null : $"{tb.Away} at {tb.Home}";
+            }
+
+            var noLine = rows.Count(r => r.NoLine);
+            message = $"Loaded {rows.Count} games."
+                + (noLine > 0 ? $" {noLine} have no line and cannot be picked yet." : "");
+            isError = false;
+            loaded = true;
+        }
+        catch (Exception ex)
+        {
+            message = ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private async Task Save()
+    {
+        busy = true;
+        message = null;
+
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            await using var tx = await db.Database.BeginTransactionAsync();
+
+            var now = DateTime.UtcNow;
+            int added = 0, changed = 0, removed = 0, skipped = 0;
+
+            foreach (var r in rows)
+            {
+                // Re-check the lock server side. The page may have been open
+                // across a kickoff.
+                if (!backfill && r.KickoffUtc <= now
+                    && r.PickedTeamId != r.OriginalPickedTeamId)
+                {
+                    skipped++;
+                    continue;
+                }
+
+                if (r.PickedTeamId is null)
+                {
+                    if (r.PickId is not null)
+                    {
+                        var existing = await db.Picks.FirstAsync(p => p.PickId == r.PickId);
+                        db.Picks.Remove(existing);
+                        removed++;
+                    }
+                    continue;
+                }
+
+                if (r.PickId is null)
+                {
+                    db.Picks.Add(new Pick
+                    {
+                        EntrantId = entrantId!.Value,
+                        GameId = r.GameId,
+                        PickedTeamId = r.PickedTeamId.Value,
+                        Source = "manual"
+                    });
+                    added++;
+                }
+                else if (r.PickedTeamId != r.OriginalPickedTeamId)
+                {
+                    var existing = await db.Picks.FirstAsync(p => p.PickId == r.PickId);
+                    // The database trigger logs this flip into pick_change.
+                    existing.PickedTeamId = r.PickedTeamId.Value;
+                    changed++;
+                }
+            }
+
+            if (tiebreakGuess is not null && weekId is not null)
+            {
+                var ew = await db.EntrantWeeks.FirstOrDefaultAsync(
+                    x => x.WeekId == weekId && x.EntrantId == entrantId);
+
+                if (ew is null)
+                {
+                    db.EntrantWeeks.Add(new EntrantWeek
+                    {
+                        EntrantId = entrantId!.Value,
+                        WeekId = weekId.Value,
+                        TiebreakGuess = tiebreakGuess
+                    });
+                }
+                else
+                {
+                    ew.TiebreakGuess = tiebreakGuess;
+                }
+            }
+
+            await db.SaveChangesAsync();
+            await tx.CommitAsync();
+
+            message = $"{added} added, {changed} changed, {removed} cleared."
+                + (skipped > 0 ? $" {skipped} rejected — already kicked off." : "");
+            isError = skipped > 0;
+
+            await Load();
+        }
+        catch (Exception ex)
+        {
+            message = ex.InnerException?.Message ?? ex.Message;
+            isError = true;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}
