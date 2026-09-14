@@ -207,7 +207,7 @@ WITH base AS (
     SELECT
         p.pick_id, p.note, p.first_picked_at, p.updated_at, p.source,
         e.entrant_id, e.display_name AS entrant, e.is_me,
-        w.season_year, w.week_number,
+        w.season_year, w.season_type, w.week_number,
         g.game_id, g.kickoff_utc, g.status, g.home_score, g.away_score,
         g.grading_line_home AS line_home,
         g.public_pct_home, g.league_pct_home,
@@ -275,22 +275,24 @@ FROM base b;
 -- Pushes are excluded from win_pct rather than counted as half.
 CREATE VIEW v_entrant_week AS
 SELECT
-    r.entrant_id, r.entrant, r.is_me, r.season_year, r.week_number,
+    r.entrant_id, r.entrant, r.is_me, r.season_year, r.season_type, r.week_number,
     count(*) FILTER (WHERE r.result = 'win')     AS wins,
     count(*) FILTER (WHERE r.result = 'loss')    AS losses,
     count(*) FILTER (WHERE r.result = 'push')    AS pushes,
     count(*) FILTER (WHERE r.result = 'pending') AS pending,
     round(count(*) FILTER (WHERE r.result = 'win')::numeric
           / NULLIF(count(*) FILTER (WHERE r.result IN ('win','loss')), 0) * 100, 1) AS win_pct,
-    rank() OVER (PARTITION BY r.season_year, r.week_number
+    rank() OVER (PARTITION BY r.season_year, r.season_type, r.week_number
                  ORDER BY count(*) FILTER (WHERE r.result = 'win') DESC) AS tracked_rank,
     max(ew.cbs_reported_rank) AS cbs_reported_rank,
     max(ew.cbs_reported_wins) AS cbs_reported_wins,
     max(w.pool_size)          AS pool_size
 FROM v_pick_result r
-JOIN week w ON w.season_year = r.season_year AND w.week_number = r.week_number
+JOIN week w ON w.season_year = r.season_year
+            AND w.season_type = r.season_type
+            AND w.week_number = r.week_number
 LEFT JOIN entrant_week ew ON ew.entrant_id = r.entrant_id AND ew.week_id = w.week_id
-GROUP BY r.entrant_id, r.entrant, r.is_me, r.season_year, r.week_number;
+GROUP BY r.entrant_id, r.entrant, r.is_me, r.season_year, r.season_type, r.week_number;
 
 -- MNF tiebreaker. The actual total is derived from the score you already
 -- ingest, so there is nothing to hand-enter and nothing to mistype.
