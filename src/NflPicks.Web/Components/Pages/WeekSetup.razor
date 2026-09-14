@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @using Microsoft.EntityFrameworkCore
 @using NflPicks.Web.Data
+@using NflPicks.Web.Data.Entities
 @inject IDbContextFactory<PicksDbContext> DbFactory
 
 <PageTitle>Week setup</PageTitle>
@@ -41,6 +42,44 @@
 @if (message is not null)
 {
     <p style="color:@(isError ? "#b00" : "#060")"><strong>@message</strong></p>
+}
+
+@if (loaded && priorWeekId is not null)
+{
+    <div class="border rounded p-3 mb-3" style="max-width:860px; background:#f8f9fa">
+        <h6>Last week (@priorWeekLabel) — off the CBS standings page</h6>
+        <p class="text-muted mb-2" style="font-size:0.9em">
+            CBS posts Tuesday morning. Five numbers, and the gap on the season
+            page becomes readable. Cut rank carries forward automatically.
+        </p>
+        <div class="row g-2">
+            <div class="col-auto">
+                <label class="form-label">Leader's season wins</label>
+                <input class="form-control form-control-sm" type="number"
+                       style="width:110px" @bind="priorLeaderWins" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label">Cut rank</label>
+                <input class="form-control form-control-sm" type="number"
+                       style="width:90px" @bind="priorCutoffRank" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label">Wins at cut</label>
+                <input class="form-control form-control-sm" type="number"
+                       style="width:100px" @bind="priorCutoffWins" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label">My season wins</label>
+                <input class="form-control form-control-sm" type="number"
+                       style="width:110px" @bind="priorMySeasonWins" />
+            </div>
+            <div class="col-auto">
+                <label class="form-label">My rank</label>
+                <input class="form-control form-control-sm" type="number"
+                       style="width:90px" @bind="priorMySeasonRank" />
+            </div>
+        </div>
+    </div>
 }
 
 @if (problems.Count > 0)
@@ -201,6 +240,14 @@
     private DateTime sundayDate = NextSunday();
     private short? poolSize;
 
+    private int? priorWeekId;
+    private string? priorWeekLabel;
+    private short? priorLeaderWins;
+    private short? priorCutoffRank;
+    private short? priorCutoffWins;
+    private short? priorMySeasonWins;
+    private short? priorMySeasonRank;
+
     private List<Team> teams = [];
     private List<Row> rows = [];
     private List<string> problems = [];
@@ -313,6 +360,8 @@
                 if (rows.Count == 0) for (var i = 0; i < 16; i++) AddRow();
             }
 
+            await LoadPriorWeek(db);
+
             loaded = true;
         }
         catch (Exception ex)
@@ -323,6 +372,87 @@
         finally
         {
             busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Week N-1 is the one CBS has just scored, so its pool numbers are what
+    /// you have in hand on Tuesday while setting up week N.
+    /// </summary>
+    private async Task LoadPriorWeek(PicksDbContext db)
+    {
+        priorWeekId = null;
+        priorWeekLabel = null;
+        priorLeaderWins = priorCutoffRank = priorCutoffWins = null;
+        priorMySeasonWins = priorMySeasonRank = null;
+
+        if (weekNumber <= 1) return;
+
+        var prior = await db.Weeks.FirstOrDefaultAsync(
+            w => w.SeasonYear == seasonYear
+              && w.SeasonType == seasonType
+              && w.WeekNumber == weekNumber - 1);
+
+        if (prior is null) return;
+
+        priorWeekId = prior.WeekId;
+        priorWeekLabel = $"week {prior.WeekNumber}";
+        priorLeaderWins = prior.LeaderSeasonWins;
+        priorCutoffWins = prior.CutoffSeasonWins;
+
+        // The cut rank rarely changes, so carry the most recent one forward
+        // rather than making you retype it every week.
+        priorCutoffRank = prior.CutoffRank
+            ?? await db.Weeks
+                .Where(w => w.SeasonYear == seasonYear
+                         && w.SeasonType == seasonType
+                         && w.WeekNumber < prior.WeekNumber
+                         && w.CutoffRank != null)
+                .OrderByDescending(w => w.WeekNumber)
+                .Select(w => w.CutoffRank)
+                .FirstOrDefaultAsync();
+
+        var me = await db.Entrants.FirstOrDefaultAsync(e => e.IsMe);
+        if (me is null) return;
+
+        var ew = await db.EntrantWeeks.FirstOrDefaultAsync(
+            x => x.WeekId == prior.WeekId && x.EntrantId == me.EntrantId);
+
+        priorMySeasonWins = ew?.CbsSeasonWins;
+        priorMySeasonRank = ew?.CbsSeasonRank;
+    }
+
+    private async Task SavePriorWeek(PicksDbContext db)
+    {
+        if (priorWeekId is null) return;
+
+        var prior = await db.Weeks.FirstAsync(w => w.WeekId == priorWeekId);
+        prior.LeaderSeasonWins = priorLeaderWins;
+        prior.CutoffSeasonWins = priorCutoffWins;
+        prior.CutoffRank = priorCutoffRank;
+
+        if (priorMySeasonWins is null && priorMySeasonRank is null) return;
+
+        var me = await db.Entrants.FirstOrDefaultAsync(e => e.IsMe);
+        if (me is null) return;
+
+        var ew = await db.EntrantWeeks.FirstOrDefaultAsync(
+            x => x.WeekId == priorWeekId && x.EntrantId == me.EntrantId);
+
+        if (ew is null)
+        {
+            db.EntrantWeeks.Add(new EntrantWeek
+            {
+                EntrantId = me.EntrantId,
+                WeekId = priorWeekId.Value,
+                CbsSeasonWins = priorMySeasonWins,
+                CbsSeasonRank = priorMySeasonRank
+            });
+        }
+        else
+        {
+            ew.CbsSeasonWins = priorMySeasonWins;
+            ew.CbsSeasonRank = priorMySeasonRank;
         }
     }
 
@@ -492,6 +622,8 @@
 
             if (week.SpreadsPostedAt is null && active.Any(r => r.Line is not null))
                 week.SpreadsPostedAt = DateTime.UtcNow;
+
+            await SavePriorWeek(db);
 
             await db.SaveChangesAsync();
 

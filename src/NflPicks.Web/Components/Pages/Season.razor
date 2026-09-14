@@ -1,0 +1,195 @@
+@page "/season"
+@rendermode InteractiveServer
+@using Npgsql
+@inject NpgsqlDataSource DataSource
+
+<PageTitle>Season</PageTitle>
+
+<h3>Season standing</h3>
+
+<div class="row g-2 mb-3" style="max-width:360px">
+    <div class="col-auto">
+        <label class="form-label">Season</label>
+        <input class="form-control" type="number" @bind="seasonYear" style="width:120px" />
+    </div>
+    <div class="col-auto d-flex align-items-end">
+        <button class="btn btn-outline-primary" @onclick="Load" disabled="@busy">Load</button>
+    </div>
+</div>
+
+@if (error is not null)
+{
+    <p style="color:#b00"><strong>Failed:</strong> @error</p>
+}
+
+@if (standing.Count > 0)
+{
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Wk</th><th>W-L-P</th><th>Season</th><th>Pct</th>
+                <th>CBS says</th><th>Rank</th><th>Leader</th>
+                <th>Cut</th><th>Gap</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var s in standing)
+            {
+                <tr>
+                    <td>@s.Week</td>
+                    <td>@s.Wins-@s.Losses@(s.Pushes > 0 ? $"-{s.Pushes}" : "")</td>
+                    <td>@s.SeasonWins-@s.SeasonLosses</td>
+                    <td>@(s.SeasonPct?.ToString("0.0") ?? "—")</td>
+                    <td>@(s.CbsSeasonWins?.ToString() ?? "—")</td>
+                    <td>@(s.CbsSeasonRank?.ToString() ?? "—")</td>
+                    <td>@(s.LeaderWins?.ToString() ?? "—")</td>
+                    <td>
+                        @if (s.CutoffWins is not null)
+                        {
+                            @($"{s.CutoffWins}")
+                            @if (s.CutoffRank is not null) { <text> (@s.CutoffRank)</text> }
+                        }
+                        else { <text>—</text> }
+                    </td>
+                    <td style="color:@(s.GapToCutoff >= 0 ? "#060" : "#b00")">
+                        @(s.GapToCutoff is null ? "—" : s.GapToCutoff > 0
+                            ? $"+{s.GapToCutoff}" : s.GapToCutoff.ToString())
+                    </td>
+                    <td style="color:#b00">@s.Reconcile</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p class="text-muted" style="max-width:760px">
+        Gap is your season wins minus the cut line's. Positive is inside the cut.
+        A <strong>MISMATCH</strong> means your picks and CBS disagree on your own
+        record — check that week's scores and picks before trusting anything else
+        on this page.
+    </p>
+
+    <h4 class="mt-4">Splits</h4>
+
+    @foreach (var group in splits.GroupBy(s => s.Dimension))
+    {
+        <h6 class="mt-3">@group.Key</h6>
+        <table class="table table-sm" style="max-width:520px">
+            <thead><tr><th>Bucket</th><th>Graded</th><th>Wins</th><th>Win %</th></tr></thead>
+            <tbody>
+                @foreach (var s in group.OrderByDescending(x => x.Graded))
+                {
+                    <tr>
+                        <td>@s.Bucket</td>
+                        <td>@s.Graded</td>
+                        <td>@s.Wins</td>
+                        <td class="@(s.Graded < 25 ? "text-muted" : null)">
+                            @s.WinPct?.ToString("0.0")
+                            @if (s.Graded < 25) { <text> (thin)</text> }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    <p class="text-muted" style="max-width:760px">
+        Buckets marked <em>thin</em> hold fewer than 25 graded picks. At that size
+        a single game moves the percentage by several points, so differences
+        between buckets are mostly noise. These get readable after a couple of
+        seasons, not a couple of weeks.
+    </p>
+}
+else if (loaded)
+{
+    <p>No graded picks for that season yet.</p>
+}
+
+@code {
+    private record StandingRow(short Week, int Wins, int Losses, int Pushes,
+                               long SeasonWins, long SeasonLosses, decimal? SeasonPct,
+                               short? CbsSeasonWins, short? CbsSeasonRank,
+                               short? LeaderWins, short? CutoffWins, short? CutoffRank,
+                               long? GapToCutoff, string? Reconcile);
+
+    private record SplitRow(string Dimension, string Bucket,
+                            long Graded, long Wins, decimal? WinPct);
+
+    private short seasonYear = (short)DateTime.Now.Year;
+    private List<StandingRow> standing = [];
+    private List<SplitRow> splits = [];
+    private string? error;
+    private bool busy;
+    private bool loaded;
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        busy = true;
+        error = null;
+        standing = [];
+        splits = [];
+
+        try
+        {
+            await using var conn = await DataSource.OpenConnectionAsync();
+
+            await using (var cmd = new NpgsqlCommand(
+                @"SELECT week_number, wins, losses, pushes,
+                         season_wins, season_losses, season_pct,
+                         cbs_season_wins, cbs_season_rank,
+                         leader_season_wins, cutoff_season_wins, cutoff_rank,
+                         gap_to_cutoff, reconcile
+                  FROM v_season_standing
+                  WHERE season_year = @y AND season_type = 2
+                  ORDER BY week_number", conn))
+            {
+                cmd.Parameters.AddWithValue("y", seasonYear);
+                await using var rd = await cmd.ExecuteReaderAsync();
+
+                while (await rd.ReadAsync())
+                {
+                    standing.Add(new StandingRow(
+                        rd.GetInt16(0), rd.GetInt32(1), rd.GetInt32(2), rd.GetInt32(3),
+                        rd.GetInt64(4), rd.GetInt64(5),
+                        rd.IsDBNull(6) ? null : rd.GetDecimal(6),
+                        rd.IsDBNull(7) ? null : rd.GetInt16(7),
+                        rd.IsDBNull(8) ? null : rd.GetInt16(8),
+                        rd.IsDBNull(9) ? null : rd.GetInt16(9),
+                        rd.IsDBNull(10) ? null : rd.GetInt16(10),
+                        rd.IsDBNull(11) ? null : rd.GetInt16(11),
+                        rd.IsDBNull(12) ? null : rd.GetInt64(12),
+                        rd.IsDBNull(13) ? null : rd.GetString(13)));
+                }
+            }
+
+            await using (var cmd = new NpgsqlCommand(
+                @"SELECT dimension, bucket, graded, wins, win_pct
+                  FROM v_my_splits
+                  WHERE season_year = @y
+                  ORDER BY dimension, graded DESC", conn))
+            {
+                cmd.Parameters.AddWithValue("y", seasonYear);
+                await using var rd = await cmd.ExecuteReaderAsync();
+
+                while (await rd.ReadAsync())
+                {
+                    splits.Add(new SplitRow(
+                        rd.GetString(0), rd.GetString(1),
+                        rd.GetInt64(2), rd.GetInt64(3),
+                        rd.IsDBNull(4) ? null : rd.GetDecimal(4)));
+                }
+            }
+
+            loaded = true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}

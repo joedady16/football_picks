@@ -62,6 +62,10 @@ public partial class PicksDbContext : DbContext
             entity.Property(e => e.WeekId).HasColumnName("week_id");
             entity.Property(e => e.CbsReportedRank).HasColumnName("cbs_reported_rank");
             entity.Property(e => e.CbsReportedWins).HasColumnName("cbs_reported_wins");
+            entity.Property(e => e.CbsSeasonRank).HasColumnName("cbs_season_rank");
+            entity.Property(e => e.CbsSeasonWins)
+                .HasComment("Season-to-date wins CBS reports for this entrant as of this week.")
+                .HasColumnName("cbs_season_wins");
             entity.Property(e => e.TiebreakGuess).HasColumnName("tiebreak_guess");
 
             entity.HasOne(d => d.Entrant).WithMany(p => p.EntrantWeeks)
@@ -228,6 +232,15 @@ public partial class PicksDbContext : DbContext
             entity.HasIndex(e => new { e.SeasonYear, e.SeasonType, e.WeekNumber }, "week_season_year_season_type_week_number_key").IsUnique();
 
             entity.Property(e => e.WeekId).HasColumnName("week_id");
+            entity.Property(e => e.CutoffRank)
+                .HasComment("Rank you are treating as the prize cut, e.g. 9 for top 10% of ~90.")
+                .HasColumnName("cutoff_rank");
+            entity.Property(e => e.CutoffSeasonWins)
+                .HasComment("Season-to-date wins of the entrant sitting at cutoff_rank, as of this week.")
+                .HasColumnName("cutoff_season_wins");
+            entity.Property(e => e.LeaderSeasonWins)
+                .HasComment("Season-to-date wins of the pool leader, as of this week.")
+                .HasColumnName("leader_season_wins");
             entity.Property(e => e.PoolSize).HasColumnName("pool_size");
             entity.Property(e => e.SeasonType)
                 .HasDefaultValue((short)2)

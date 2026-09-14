@@ -15,6 +15,13 @@ public partial class EntrantWeek
 
     public short? CbsReportedRank { get; set; }
 
+    /// <summary>
+    /// Season-to-date wins CBS reports for this entrant as of this week.
+    /// </summary>
+    public short? CbsSeasonWins { get; set; }
+
+    public short? CbsSeasonRank { get; set; }
+
     public virtual Entrant Entrant { get; set; } = null!;
 
     public virtual Week Week { get; set; } = null!;

@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using NflPicks.Web.Data;
 using NflPicks.Web.Services.Espn;
+using NflPicks.Web.Data.Entities;
 
 namespace NflPicks.Web.Services.ESPN;
 
