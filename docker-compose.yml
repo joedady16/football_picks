@@ -1,0 +1,25 @@
+services:
+  db:
+    image: postgres:17
+    container_name: nflpicks-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nflpicks
+      POSTGRES_USER: picks
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    ports:
+      # Host 5433 so this never collides with a local Postgres on 5432.
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Runs in filename order, but ONLY when pgdata is empty.
+      # To re-run after a schema edit: docker compose down -v
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U picks -d nflpicks"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  pgdata:

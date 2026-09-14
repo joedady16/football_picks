@@ -1,0 +1,13 @@
+# Everything text gets LF in the repo.
+* text=auto eol=lf
+
+# These are consumed by Linux containers. CRLF breaks them in ways that are
+# hard to read: psql reports a syntax error on a line that looks correct.
+*.sql  text eol=lf
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+
+# Visual Studio / MSBuild files are happier with CRLF on Windows.
+*.sln     text eol=crlf
+*.csproj  text eol=crlf

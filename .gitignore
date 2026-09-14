@@ -1,0 +1,7 @@
+.env
+
+# .NET (Phase 2 onward)
+bin/
+obj/
+*.user
+.vs/
