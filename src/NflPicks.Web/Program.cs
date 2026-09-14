@@ -1,10 +1,20 @@
+using Microsoft.EntityFrameworkCore;
 using NflPicks.Web.Components;
+using NflPicks.Web.Data;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+var cs = builder.Configuration.GetConnectionString("Picks")
+    ?? throw new InvalidOperationException("ConnectionStrings:Picks is missing.");
+
+var dataSource = new NpgsqlDataSourceBuilder(cs).Build();
+builder.Services.AddSingleton(dataSource);
+builder.Services.AddDbContextFactory<PicksDbContext>(o => o.UseNpgsql(dataSource));
 
 var app = builder.Build();
 

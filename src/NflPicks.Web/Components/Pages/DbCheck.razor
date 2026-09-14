@@ -1,11 +1,19 @@
 @page "/dbcheck"
 @rendermode InteractiveServer
+@using Microsoft.EntityFrameworkCore
 @using Npgsql
-@inject IConfiguration Config
+@using NflPicks.Web.Data
+@inject NpgsqlDataSource DataSource
+@inject IDbContextFactory<PicksDbContext> DbFactory
 
 <PageTitle>DB check</PageTitle>
 
 <h3>Database connection</h3>
+
+<p>
+    Checks both access paths against the same pool: raw Npgsql for the analysis
+    views, EF Core for everything else.
+</p>
 
 <button class="btn btn-primary" @onclick="RunCheck" disabled="@busy">
     @(busy ? "Checking..." : "Run check")
@@ -18,18 +26,18 @@
 else if (results is not null)
 {
     <table class="table">
-        <thead><tr><th>Check</th><th>Value</th></tr></thead>
+        <thead><tr><th>Path</th><th>Check</th><th>Value</th></tr></thead>
         <tbody>
             @foreach (var r in results)
             {
-                <tr><td>@r.Label</td><td>@r.Value</td></tr>
+                <tr><td>@r.Path</td><td>@r.Label</td><td>@r.Value</td></tr>
             }
         </tbody>
     </table>
 }
 
 @code {
-    private record Row(string Label, string Value);
+    private record Row(string Path, string Label, string Value);
 
     private List<Row>? results;
     private string? error;
@@ -43,38 +51,42 @@ else if (results is not null)
 
         try
         {
-            // Three questions, in order of what they rule out:
-            //   1. can we connect and does Postgres answer
-            //   2. did 01_schema.sql run   (tables exist)
-            //   3. did 02_seed_reference.sql run  (32 teams, 1 entrant)
-            // A green container answers none of these, which is why the page
-            // asks all three rather than just opening a connection.
-            var cs = Config.GetConnectionString("Picks")
-                     ?? throw new InvalidOperationException(
-                            "ConnectionStrings:Picks is not set. Check user secrets.");
-
-            // `await using` awaits the DISPOSAL, not the initializer -- the
-            // call itself needs its own await or `conn` is a ValueTask.
-            await using var dataSource = NpgsqlDataSource.Create(cs);
-            await using var conn = await dataSource.OpenConnectionAsync();
-
             var rows = new List<Row>();
 
-            rows.Add(new("Server version", conn.PostgreSqlVersion.ToString()));
+            // ---- raw Npgsql: the path the analysis views will use ----
+            await using (var conn = await DataSource.OpenConnectionAsync())
+            {
+                rows.Add(new("Npgsql", "Server version", conn.PostgreSqlVersion.ToString()));
 
-            rows.Add(new("Tables in public schema", await ScalarAsync(conn,
-                "SELECT count(*) FROM information_schema.tables " +
-                "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")));
+                rows.Add(new("Npgsql", "Tables", await ScalarAsync(conn,
+                    "SELECT count(*) FROM information_schema.tables " +
+                    "WHERE table_schema = 'public' AND table_type = 'BASE TABLE'")));
 
-            rows.Add(new("Views in public schema", await ScalarAsync(conn,
-                "SELECT count(*) FROM information_schema.views " +
-                "WHERE table_schema = 'public'")));
+                rows.Add(new("Npgsql", "Views", await ScalarAsync(conn,
+                    "SELECT count(*) FROM information_schema.views " +
+                    "WHERE table_schema = 'public'")));
 
-            rows.Add(new("Teams seeded", await ScalarAsync(conn,
-                "SELECT count(*) FROM team")));
+                // Proves a view is queryable, not just present. Returns no rows
+                // against an empty database, which is the expected result now.
+                rows.Add(new("Npgsql", "v_pick_result rows", await ScalarAsync(conn,
+                    "SELECT count(*) FROM v_pick_result")));
+            }
 
-            rows.Add(new("My entrant row", await ScalarAsync(conn,
-                "SELECT coalesce(max(display_name), '(none)') FROM entrant WHERE is_me")));
+            // ---- EF Core: the path writes will use ----
+            await using var db = await DbFactory.CreateDbContextAsync();
+
+            rows.Add(new("EF Core", "Teams", (await db.Teams.CountAsync()).ToString()));
+
+            var me = await db.Entrants
+                             .Where(e => e.IsMe)
+                             .Select(e => e.DisplayName)
+                             .FirstOrDefaultAsync();
+
+            rows.Add(new("EF Core", "My entrant", me ?? "(none)"));
+
+            // If EF and Npgsql disagree here, they are not on the same database.
+            rows.Add(new("EF Core", "Entity types mapped",
+                db.Model.GetEntityTypes().Count().ToString()));
 
             results = rows;
         }
