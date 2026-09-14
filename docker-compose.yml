@@ -8,18 +8,39 @@ services:
       POSTGRES_USER: picks
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
     ports:
-      # Host 5433 so this never collides with a local Postgres on 5432.
+      # Host 5433 so this never collides with a local Postgres install, and so
+      # pgAdmin and Visual Studio can still reach it directly.
       - "5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Runs in filename order, but ONLY when pgdata is empty.
-      # To re-run after a schema edit: docker compose down -v
+      # Schema changes go through db/migrations, not by wiping this.
       - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U picks -d nflpicks"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  app:
+    build:
+      context: ./src/NflPicks.Web
+    container_name: nflpicks-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # User secrets only load in Development and do not exist inside a
+      # container anyway, so the connection string comes in as an env var.
+      # Double underscore is the separator for nested config keys.
+      #
+      # Host is 'db' and port is 5432: container-to-container on the compose
+      # network, not through the published 5433 mapping.
+      ConnectionStrings__Picks: "Host=db;Port=5432;Database=nflpicks;Username=picks;Password=${POSTGRES_PASSWORD}"
+      ASPNETCORE_ENVIRONMENT: Production
+    ports:
+      - "8080:8080"
 
 volumes:
   pgdata:

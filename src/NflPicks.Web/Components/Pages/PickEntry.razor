@@ -67,6 +67,7 @@
                     <th>Line</th>
                     <th>Public %</th>
                     <th>Your pick</th>
+                    <th>Why</th>
                     <th>Result</th>
                 </tr>
             </thead>
@@ -107,6 +108,13 @@
                             </button>
                         </td>
                         <td>
+                            <input class="form-control form-control-sm"
+                                   style="width:240px" maxlength="300"
+                                   placeholder="reasoning (optional)"
+                                   disabled="@(locked || r.NoLine)"
+                                   @bind="r.Note" />
+                        </td>
+                        <td>
                             @if (r.Result is not null)
                             {
                                 <span style="color:@(r.Result == "win" ? "#060"
@@ -137,6 +145,9 @@
             @madeCount of @rows.Count games picked.
             Lines are shown from each team's own perspective, so the button you
             click is the side you are taking.
+            The <strong>Why</strong> column locks at kickoff along with the pick —
+            a reason written after the result is not the reason you had. A few
+            words is enough: what drove the call, not a paragraph.
         </p>
     }
 }
@@ -159,6 +170,8 @@
         public int? PickId { get; set; }
         public bool IsLocked { get; set; }
         public string? Result { get; set; }
+        public string? Note { get; set; }
+        public string? OriginalNote { get; set; }
     }
 
     private static readonly TimeZoneInfo Et =
@@ -181,6 +194,9 @@
     private bool busy;
 
     private int madeCount => rows.Count(r => r.PickedTeamId is not null);
+
+    private static string? Blank(string? s) =>
+        string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
     private static string FormatLine(decimal line) =>
         line == 0 ? "PK" : line.ToString("+0.0;-0.0");
@@ -281,7 +297,9 @@
                     OriginalPickedTeamId = pick?.PickedTeamId,
                     PickId = pick?.PickId,
                     IsLocked = kickoffUtc <= now,
-                    Result = result
+                    Result = result,
+                    Note = pick?.Note,
+                    OriginalNote = pick?.Note
                 });
             }
 
@@ -325,8 +343,12 @@
             {
                 // Re-check the lock server side. The page may have been open
                 // across a kickoff.
+                // Notes lock with the pick. A note written after the result is
+                // known is a rationalisation, not reasoning, and it would
+                // quietly ruin the only analysis this field exists for.
                 if (!backfill && r.KickoffUtc <= now
-                    && r.PickedTeamId != r.OriginalPickedTeamId)
+                    && (r.PickedTeamId != r.OriginalPickedTeamId
+                        || Blank(r.Note) != Blank(r.OriginalNote)))
                 {
                     skipped++;
                     continue;
@@ -350,16 +372,24 @@
                         EntrantId = entrantId!.Value,
                         GameId = r.GameId,
                         PickedTeamId = r.PickedTeamId.Value,
-                        Source = "manual"
+                        Source = "manual",
+                        Note = Blank(r.Note)
                     });
                     added++;
                 }
-                else if (r.PickedTeamId != r.OriginalPickedTeamId)
+                else if (r.PickedTeamId != r.OriginalPickedTeamId
+                      || Blank(r.Note) != Blank(r.OriginalNote))
                 {
                     var existing = await db.Picks.FirstAsync(p => p.PickId == r.PickId);
-                    // The database trigger logs this flip into pick_change.
-                    existing.PickedTeamId = r.PickedTeamId.Value;
-                    changed++;
+
+                    if (r.PickedTeamId != r.OriginalPickedTeamId)
+                    {
+                        // The database trigger logs this flip into pick_change.
+                        existing.PickedTeamId = r.PickedTeamId.Value;
+                        changed++;
+                    }
+
+                    existing.Note = Blank(r.Note);
                 }
             }
 
