@@ -1,0 +1,193 @@
+@page "/teams"
+@rendermode InteractiveServer
+@using Npgsql
+@inject NpgsqlDataSource DataSource
+
+<PageTitle>Team form</PageTitle>
+
+<h3>Team form</h3>
+
+<div class="row g-2 mb-3" style="max-width:520px">
+    <div class="col-auto">
+        <label class="form-label">Season</label>
+        <input class="form-control" type="number" @bind="seasonYear" style="width:120px" />
+    </div>
+    <div class="col-auto">
+        <label class="form-label">Sort by</label>
+        <select class="form-select" @bind="sortKey" style="width:200px">
+            <option value="team">Team</option>
+            <option value="ppg">Points per game</option>
+            <option value="papg">Points allowed</option>
+            <option value="total">Avg combined total</option>
+            <option value="cover">Avg cover margin</option>
+        </select>
+    </div>
+    <div class="col-auto d-flex align-items-end">
+        <button class="btn btn-outline-primary" @onclick="Load" disabled="@busy">Load</button>
+    </div>
+</div>
+
+@if (error is not null)
+{
+    <p style="color:#b00"><strong>Failed:</strong> @error</p>
+}
+
+@if (rows.Count == 0 && loaded)
+{
+    <p>No completed games with lines yet for that season.</p>
+}
+
+@if (rows.Count > 0)
+{
+    <p class="text-muted" style="max-width:820px">
+        Built from every game in your database, not just the ones you picked, so
+        it fills at 16 games a week. @maxGames week@(maxGames == 1 ? "" : "s") in.
+    </p>
+
+    <table class="table table-sm">
+        <thead>
+            <tr>
+                <th>Team</th>
+                <th title="Games with a final score and a line">GP</th>
+                <th>PF/g</th>
+                <th>PA/g</th>
+                <th>Margin</th>
+                <th title="Average combined points in their games">Total/g</th>
+                <th title="Points scored at home vs away">Home / Away PF</th>
+                <th title="History, not a signal">ATS</th>
+                <th title="Average points they beat the number by">Cover</th>
+                <th title="Your record picking this team">You</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var r in Sorted())
+            {
+                <tr>
+                    <td><strong>@r.Team</strong></td>
+                    <td>@r.Games</td>
+                    <td>@r.Ppg</td>
+                    <td>@r.Papg</td>
+                    <td style="color:@(r.Margin >= 0 ? "#060" : "#b00")">
+                        @(r.Margin > 0 ? "+" : "")@r.Margin
+                    </td>
+                    <td><strong>@r.AvgTotal</strong></td>
+                    <td class="text-muted">
+                        @(r.PpgHome?.ToString() ?? "—") / @(r.PpgAway?.ToString() ?? "—")
+                    </td>
+                    <td class="text-muted">
+                        @r.AtsW-@r.AtsL@(r.AtsP > 0 ? $"-{r.AtsP}" : "")
+                    </td>
+                    <td>@(r.AvgCover > 0 ? "+" : "")@r.AvgCover</td>
+                    <td class="text-muted">
+                        @if (r.MyGraded > 0)
+                        {
+                            @($"{r.MyWins}-{r.MyLosses}")
+                        }
+                        else
+                        {
+                            <text>—</text>
+                        }
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <div style="max-width:820px">
+        <p class="text-muted">
+            <strong>Total/g is the column worth using.</strong> It is the starting
+            point for the Monday night tiebreaker — add the two teams' averages,
+            then adjust for weather, pace and whether either defence is the reason
+            the number is low. With 90 entrants, ties on record are common and the
+            tiebreaker settles more weeks than any single pick.
+        </p>
+        <p class="text-muted">
+            <strong>ATS is greyed out on purpose.</strong> A team's cover record is
+            the most-quoted and least useful stat in pick'em. The line moves to
+            absorb exactly that information, and at this sample size it would be
+            noise even if it did not. It is here because you will want to look it
+            up, not because it should change a pick.
+        </p>
+        <p class="text-muted">
+            <strong>Cover</strong> is the more defensible one: not whether a team
+            covers but by how much it beats or misses the number. A consistently
+            positive figure suggests the market is pricing them low. Still thin
+            this early in a season.
+        </p>
+    </div>
+}
+
+@code {
+    private record TeamRow(string Team, int Games, decimal Ppg, decimal Papg,
+                           decimal Margin, decimal AvgTotal,
+                           decimal? PpgHome, decimal? PpgAway,
+                           int AtsW, int AtsL, int AtsP, decimal AvgCover,
+                           int MyGraded, int MyWins, int MyLosses);
+
+    private short seasonYear = (short)DateTime.Now.Year;
+    private string sortKey = "team";
+    private List<TeamRow> rows = [];
+    private string? error;
+    private bool busy;
+    private bool loaded;
+
+    private int maxGames => rows.Count == 0 ? 0 : rows.Max(r => r.Games);
+
+    private IEnumerable<TeamRow> Sorted() => sortKey switch
+    {
+        "ppg"   => rows.OrderByDescending(r => r.Ppg),
+        "papg"  => rows.OrderBy(r => r.Papg),
+        "total" => rows.OrderByDescending(r => r.AvgTotal),
+        "cover" => rows.OrderByDescending(r => r.AvgCover),
+        _       => rows.OrderBy(r => r.Team)
+    };
+
+    protected override async Task OnInitializedAsync() => await Load();
+
+    private async Task Load()
+    {
+        busy = true;
+        error = null;
+        rows = [];
+
+        try
+        {
+            await using var conn = await DataSource.OpenConnectionAsync();
+
+            await using var cmd = new NpgsqlCommand(
+                @"SELECT f.team, f.games, f.ppg, f.papg, f.margin, f.avg_total,
+                         f.ppg_home, f.ppg_away,
+                         f.ats_w, f.ats_l, f.ats_p, f.avg_cover_margin,
+                         coalesce(m.graded, 0), coalesce(m.wins, 0), coalesce(m.losses, 0)
+                  FROM v_team_form f
+                  LEFT JOIN v_my_team_record m
+                         ON m.team = f.team AND m.season_year = f.season_year
+                  WHERE f.season_year = @y
+                  ORDER BY f.team", conn);
+
+            cmd.Parameters.AddWithValue("y", seasonYear);
+            await using var rd = await cmd.ExecuteReaderAsync();
+
+            while (await rd.ReadAsync())
+            {
+                rows.Add(new TeamRow(
+                    rd.GetString(0), rd.GetInt32(1),
+                    rd.GetDecimal(2), rd.GetDecimal(3), rd.GetDecimal(4), rd.GetDecimal(5),
+                    rd.IsDBNull(6) ? null : rd.GetDecimal(6),
+                    rd.IsDBNull(7) ? null : rd.GetDecimal(7),
+                    rd.GetInt32(8), rd.GetInt32(9), rd.GetInt32(10), rd.GetDecimal(11),
+                    (int)rd.GetInt64(12), (int)rd.GetInt64(13), (int)rd.GetInt64(14)));
+            }
+
+            loaded = true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+}
