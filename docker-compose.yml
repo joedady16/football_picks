@@ -40,7 +40,7 @@ services:
       ConnectionStrings__Picks: "Host=db;Port=5432;Database=nflpicks;Username=picks;Password=${POSTGRES_PASSWORD}"
       ASPNETCORE_ENVIRONMENT: Production
     ports:
-      - "8080:8080"
+      - "8090:8080"
 
 volumes:
   pgdata:
