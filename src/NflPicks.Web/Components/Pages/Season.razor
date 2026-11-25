@@ -98,6 +98,50 @@
         between buckets are mostly noise. These get readable after a couple of
         seasons, not a couple of weeks.
     </p>
+
+    @if (byTeam.Count > 0)
+    {
+        <h4 class="mt-4">By team</h4>
+        <p class="text-muted small" style="max-width:760px">
+            Every graded pick counts twice here: once for the team you took and once,
+            as a fade, for the team you went against. <strong>In their games</strong>
+            is both together, your record whenever that team is on the board.
+        </p>
+
+        <div class="btn-group btn-group-sm mb-2">
+            @foreach (var (key, label) in new[] { ("total", "In their games"), ("taking", "Taking"), ("fading", "Fading"), ("team", "Team") })
+            {
+                <button class="btn @(teamSort == key ? "btn-secondary" : "btn-outline-secondary")"
+                        @onclick="() => teamSort = key">@label</button>
+            }
+        </div>
+
+        <table class="table table-sm align-middle" style="max-width:560px">
+            <thead>
+                <tr class="small text-muted">
+                    <th>Team</th><th>Taking them</th><th>Fading them</th><th>In their games</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var t in SortedTeams())
+                {
+                    <tr>
+                        <td><a href="teams/@t.Team?season=@seasonYear" class="fw-semibold text-decoration-none">@t.Team</a></td>
+                        <td>@Rec(t.TakeW, t.TakeL)</td>
+                        <td>@Rec(t.FadeW, t.FadeL)</td>
+                        <td>@Rec(t.TakeW + t.FadeW, t.TakeL + t.FadeL)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+
+        <p class="text-muted small" style="max-width:760px">
+            About ten picks per team per season is far too few to mean much: even a
+            perfect coin-flipper lands at 3-7 or 7-3 for a few teams every year. Use
+            it as a prompt ("why do I keep missing on Seattle?") rather than a rule,
+            and look for teams that stay at the top or bottom across seasons.
+        </p>
+    }
 }
 else if (loaded)
 {
@@ -114,6 +158,31 @@ else if (loaded)
     private record SplitRow(string Dimension, string Bucket,
                             long Graded, long Wins, decimal? WinPct);
 
+    private record TeamPickRow(string Team, int TakeW, int TakeL, int FadeW, int FadeL)
+    {
+        public int Graded => TakeW + TakeL + FadeW + FadeL;
+        public decimal Pct(int w, int l) => w + l == 0 ? -1 : (decimal)w / (w + l);
+    }
+
+    private List<TeamPickRow> byTeam = [];
+    private string teamSort = "total";
+
+    private IEnumerable<TeamPickRow> SortedTeams() => teamSort switch
+    {
+        "taking" => byTeam.OrderByDescending(t => t.Pct(t.TakeW, t.TakeL)).ThenByDescending(t => t.TakeW + t.TakeL),
+        "fading" => byTeam.OrderByDescending(t => t.Pct(t.FadeW, t.FadeL)).ThenByDescending(t => t.FadeW + t.FadeL),
+        "team"   => byTeam.OrderBy(t => t.Team),
+        _        => byTeam.OrderByDescending(t => t.Pct(t.TakeW + t.FadeW, t.TakeL + t.FadeL)).ThenByDescending(t => t.Graded)
+    };
+
+    private static MarkupString Rec(int w, int l)
+    {
+        if (w + l == 0) return new("<span class=\"text-muted\">—</span>");
+        var pct = (decimal)w / (w + l);
+        var color = pct >= 0.65m ? "#2e7d32" : pct <= 0.35m ? "#c62828" : "inherit";
+        return new($"<span style=\"color:{color}\">{w}-{l}</span>");
+    }
+
     private short seasonYear = (short)DateTime.Now.Year;
     private List<StandingRow> standing = [];
     private List<SplitRow> splits = [];
@@ -129,6 +198,7 @@ else if (loaded)
         error = null;
         standing = [];
         splits = [];
+        byTeam = [];
 
         try
         {
@@ -178,6 +248,36 @@ else if (loaded)
                         rd.GetString(0), rd.GetString(1),
                         rd.GetInt64(2), rd.GetInt64(3),
                         rd.IsDBNull(4) ? null : rd.GetDecimal(4)));
+                }
+            }
+
+            // Each pick contributes a "taking" row for the picked team and a
+            // "fading" row for its opponent.
+            await using (var cmd = new NpgsqlCommand(
+                @"WITH r AS (
+                      SELECT picked_team AS team, true AS taking, result
+                      FROM v_pick_result
+                      WHERE is_me AND season_year = @y AND result IN ('win', 'loss')
+                      UNION ALL
+                      SELECT CASE WHEN picked_home THEN away_team ELSE home_team END, false, result
+                      FROM v_pick_result
+                      WHERE is_me AND season_year = @y AND result IN ('win', 'loss')
+                  )
+                  SELECT team,
+                         count(*) FILTER (WHERE taking     AND result = 'win'),
+                         count(*) FILTER (WHERE taking     AND result = 'loss'),
+                         count(*) FILTER (WHERE NOT taking AND result = 'win'),
+                         count(*) FILTER (WHERE NOT taking AND result = 'loss')
+                  FROM r GROUP BY team", conn))
+            {
+                cmd.Parameters.AddWithValue("y", seasonYear);
+                await using var rd = await cmd.ExecuteReaderAsync();
+
+                while (await rd.ReadAsync())
+                {
+                    byTeam.Add(new TeamPickRow(rd.GetString(0),
+                        (int)rd.GetInt64(1), (int)rd.GetInt64(2),
+                        (int)rd.GetInt64(3), (int)rd.GetInt64(4)));
                 }
             }
 
