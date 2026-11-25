@@ -46,6 +46,7 @@ builder.Services.AddHttpClient<EspnScoreboardClient>();
 //------------------------------------------------------
 
 builder.Services.AddScoped<ScheduleIngestService>();
+builder.Services.AddSingleton<NflPicks.Web.Services.TeamStats>();
 
 var app = builder.Build();
 

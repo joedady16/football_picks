@@ -1,0 +1,291 @@
+@page "/teams/{Abbr}"
+@rendermode InteractiveServer
+@using NflPicks.Web.Services
+@inject TeamStats Stats
+
+<PageTitle>@(team?.FullName ?? Abbr)</PageTitle>
+
+<a href="teams?season=@season" class="small text-decoration-none">← All teams</a>
+
+@if (error is not null)
+{
+    <p style="color:#b00"><strong>Failed:</strong> @error</p>
+}
+else if (loaded && team is null)
+{
+    <p>No team "@Abbr".</p>
+}
+else if (team is not null)
+{
+    <div class="d-flex align-items-baseline gap-3 mt-2 mb-3 flex-wrap">
+        <h3 class="mb-0">@team.FullName</h3>
+        <span class="text-muted">@team.Conference @team.Division · @season</span>
+        <span class="fs-5 fw-semibold">@team.Record</span>
+        <FormDots Results="@team.Last5" />
+    </div>
+
+    @* ---------------- Next game ---------------- *@
+    @if (next is not null)
+    {
+        var opp = teams.FirstOrDefault(t => t.Abbr == next.Opponent);
+
+        <div class="card mb-3" style="max-width:760px">
+            <div class="card-header py-2">
+                <strong>Next:</strong>
+                @Et(next.KickoffUtc).ToString("ddd MMM d, h:mm tt") ET ·
+                @(next.IsHome ? "vs" : "@")
+                <a href="@Link(next.Opponent)" class="fw-semibold">@next.Opponent</a>
+                @if (next.Line is not null)
+                {
+                    <span> · @team.Abbr @FormatLine(next.Line.Value)</span>
+                }
+                else
+                {
+                    <span class="text-muted"> · no line yet</span>
+                }
+                @if (next.PublicPctOnTeam is not null)
+                {
+                    <span class="text-muted"> · public @next.PublicPctOnTeam.Value.ToString("0")% on @team.Abbr</span>
+                }
+                <span class="ms-2">
+                    @if (next.MyPick is null)
+                    {
+                        <span class="badge bg-secondary">not picked</span>
+                    }
+                    else
+                    {
+                        <span class="badge bg-primary">you: @next.MyPick</span>
+                    }
+                </span>
+            </div>
+            @if (opp is not null)
+            {
+                <table class="table table-sm mb-0">
+                    <thead>
+                        <tr class="small text-muted">
+                            <th></th>
+                            <th class="text-end">@team.Abbr</th>
+                            <th class="text-end">@opp.Abbr</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @CompareRow("Record", team.Record, opp.Record)
+                        @CompareRow("Margin / game", Signed(team.Margin), Signed(opp.Margin))
+                        @CompareRow("Margin, last 5", Signed(team.Last5Margin), Signed(opp.Last5Margin))
+                        @CompareRow("Points / game", Num(team.Ppg), Num(opp.Ppg))
+                        @CompareRow("Allowed / game", Num(team.Papg), Num(opp.Papg))
+                        @CompareRow(next.IsHome ? "Home / road record" : "Road / home record",
+                                    next.IsHome ? $"{team.HomeW}-{team.HomeL} home" : $"{team.AwayW}-{team.AwayL} road",
+                                    next.IsHome ? $"{opp.AwayW}-{opp.AwayL} road" : $"{opp.HomeW}-{opp.HomeL} home")
+                        @CompareRow("Avg game total", Num(team.AvgTotal), Num(opp.AvgTotal))
+                    </tbody>
+                </table>
+            }
+        </div>
+    }
+
+    @* ---------------- Season numbers ---------------- *@
+    <div class="row g-2 mb-3" style="max-width:980px">
+        @Tile("Points / game", Num(team.Ppg), RankText(t => t.Ppg, descending: true))
+        @Tile("Allowed / game", Num(team.Papg), RankText(t => t.Papg, descending: false))
+        @Tile("Margin / game", Signed(team.Margin), $"last 5: {Signed(team.Last5Margin)}")
+        @Tile("Home / road", $"{team.HomeW}-{team.HomeL} / {team.AwayW}-{team.AwayL}", null)
+        @Tile("Against the spread", team.Ats, team.AvgCover is null ? null : $"avg cover {Signed(team.AvgCover)}")
+        @Tile("Your picks", $"{myFor.W}-{myFor.L} on · {myAgainst.W}-{myAgainst.L} vs", "taking them · fading them")
+    </div>
+
+    @* ---------------- Game log ---------------- *@
+    <div class="d-flex align-items-center gap-3 mb-1">
+        <h5 class="mb-0">@(showAll ? "All games" : "Last 5")</h5>
+        @if (played.Count > 5)
+        {
+            <button class="btn btn-link btn-sm p-0" @onclick="() => showAll = !showAll">
+                @(showAll ? "show last 5" : $"show all {played.Count}")
+            </button>
+        }
+    </div>
+
+    @if (played.Count == 0)
+    {
+        <p class="text-muted">No completed games yet.</p>
+    }
+    else
+    {
+        <table class="table table-sm align-middle" style="max-width:880px">
+            <thead>
+                <tr class="small text-muted">
+                    <th>Wk</th>
+                    <th>Opponent</th>
+                    <th>Result</th>
+                    <th title="This team's line in that game">Line</th>
+                    <th title="How much they beat (or missed) the line by">vs line</th>
+                    <th>Your pick</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var g in (showAll ? played : played.TakeLast(5)).Reverse())
+                {
+                    <tr>
+                        <td class="text-muted">@WeekLabel(g)</td>
+                        <td>
+                            @(g.IsHome ? "vs" : "@")
+                            <a href="@Link(g.Opponent)">@g.Opponent</a>
+                        </td>
+                        <td>
+                            <span class="fw-semibold" style="color:@OutcomeColor(g.Outcome)">@g.Outcome</span>
+                            @g.PointsFor-@g.PointsAgainst
+                        </td>
+                        <td class="text-muted">@(g.Line is null ? "—" : FormatLine(g.Line.Value))</td>
+                        <td>
+                            @if (g.CoverMargin is not null)
+                            {
+                                <span style="color:@(g.CoverMargin > 0 ? "#2e7d32" : g.CoverMargin < 0 ? "#c62828" : "#757575")">
+                                    @(g.CoverMargin > 0 ? "covered" : g.CoverMargin < 0 ? "missed" : "push")
+                                    @(g.CoverMargin != 0 ? $"by {Math.Abs(g.CoverMargin.Value):0.#}" : "")
+                                </span>
+                            }
+                        </td>
+                        <td>
+                            @if (g.MyPick is null)
+                            {
+                                <span class="text-muted">—</span>
+                            }
+                            else
+                            {
+                                <span>@g.MyPick</span>
+                                <span class="ms-1 small" style="color:@(g.MyResult == "win" ? "#2e7d32" : g.MyResult == "loss" ? "#c62828" : "#757575")">
+                                    @g.MyResult
+                                </span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    @* ---------------- Division ---------------- *@
+    <h5 class="mt-4 mb-1">@team.Conference @team.Division</h5>
+    <table class="table table-sm align-middle" style="max-width:520px">
+        <tbody>
+            @foreach (var t in teams.Where(t => t.Conference == team.Conference && t.Division == team.Division)
+                                    .OrderByDescending(t => t.Wins - t.Losses)
+                                    .ThenByDescending(t => t.Margin))
+            {
+                <tr class="@(t.Abbr == team.Abbr ? "table-active" : null)">
+                    <td><a href="@Link(t.Abbr)" class="fw-semibold text-decoration-none">@t.Abbr</a></td>
+                    <td>@t.Record</td>
+                    <td class="small" style="color:@(t.Margin >= 0 ? "#2e7d32" : "#c62828")">@Signed(t.Margin)</td>
+                    <td class="text-end"><FormDots Results="@t.Last5" /></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+
+    <p class="text-muted small" style="max-width:760px">
+        <strong>Avg game total</strong> is the starting point for the Monday night
+        tiebreaker: average the two teams' numbers, then adjust for weather and pace.
+        <strong>Against the spread</strong> is history, not a signal; the line already
+        prices what a team has been doing. <strong>Margin, last 5</strong> against the
+        season number is the quickest read on whether a team is getting better or worse.
+    </p>
+}
+
+@code {
+    [Parameter] public string Abbr { get; set; } = "";
+    [SupplyParameterFromQuery(Name = "season")] public int? Season { get; set; }
+
+    private static readonly TimeZoneInfo EtZone =
+        TimeZoneInfo.FindSystemTimeZoneById("America/New_York");
+
+    private short season;
+    private List<TeamStats.TeamSummary> teams = [];
+    private TeamStats.TeamSummary? team;
+    private List<TeamStats.TeamGame> played = [];
+    private TeamStats.TeamGame? next;
+    private (int W, int L) myFor, myAgainst;
+    private bool showAll;
+    private bool loaded;
+    private string? error;
+
+    // Runs on every navigation, including team-to-team links within this page.
+    protected override async Task OnParametersSetAsync()
+    {
+        error = null;
+        showAll = false;
+        try
+        {
+            season = (short?)Season ?? await Stats.LatestSeasonAsync() ?? (short)DateTime.Now.Year;
+            teams = await Stats.SummariesAsync(season);
+            team = teams.FirstOrDefault(t => string.Equals(t.Abbr, Abbr, StringComparison.OrdinalIgnoreCase));
+
+            if (team is not null)
+            {
+                var games = await Stats.GamesAsync(season, team.TeamId);
+                played = games.Where(g => g.IsFinal).ToList();
+                next = games.FirstOrDefault(g => !g.IsFinal);
+
+                myFor = Tally(games.Where(g => g.MyPick == team.Abbr));
+                myAgainst = Tally(games.Where(g => g.MyPick == g.Opponent));
+            }
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        loaded = true;
+    }
+
+    private static (int, int) Tally(IEnumerable<TeamStats.TeamGame> gs) =>
+        (gs.Count(g => g.MyResult == "win"), gs.Count(g => g.MyResult == "loss"));
+
+    private string Link(string abbr) => $"teams/{abbr}?season={season}";
+
+    private static DateTime Et(DateTime utc) => TimeZoneInfo.ConvertTimeFromUtc(utc, EtZone);
+
+    private static string WeekLabel(TeamStats.TeamGame g) =>
+        g.SeasonType == 3 ? $"P{g.Week}" : g.Week.ToString();
+
+    private static string FormatLine(decimal line) =>
+        line == 0 ? "PK" : line.ToString("+0.0;-0.0");
+
+    private static string Num(decimal? v) => v?.ToString("0.0") ?? "—";
+
+    private static string Signed(decimal? v) =>
+        v is null ? "—" : v > 0 ? $"+{v:0.0}" : $"{v:0.0}";
+
+    private static string OutcomeColor(string? o) =>
+        o == "W" ? "#2e7d32" : o == "L" ? "#c62828" : "#757575";
+
+    private string? RankText(Func<TeamStats.TeamSummary, decimal?> by, bool descending)
+    {
+        var mine = by(team!);
+        if (mine is null) return null;
+        var others = teams.Select(by).Where(v => v is not null).ToList();
+        var rank = 1 + others.Count(v => descending ? v > mine : v < mine);
+        return $"{Ordinal(rank)} of {others.Count}";
+    }
+
+    private static string Ordinal(int n) =>
+        n + ((n % 100) is 11 or 12 or 13 ? "th" : (n % 10) switch { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" });
+
+    private static RenderFragment Tile(string label, string value, string? sub) => __builder =>
+    {
+        <div class="col-6 col-md-4 col-lg-2">
+            <div class="border rounded p-2 h-100">
+                <div class="small text-muted">@label</div>
+                <div class="fs-5 fw-semibold">@value</div>
+                @if (sub is not null) { <div class="small text-muted">@sub</div> }
+            </div>
+        </div>
+    };
+
+    private static RenderFragment CompareRow(string label, string a, string b) => __builder =>
+    {
+        <tr>
+            <td class="small text-muted">@label</td>
+            <td class="text-end">@a</td>
+            <td class="text-end">@b</td>
+        </tr>
+    };
+}

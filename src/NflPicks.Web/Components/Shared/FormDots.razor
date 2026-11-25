@@ -1,0 +1,19 @@
+@* Recent results as small coloured W/L/T badges, oldest left, newest right. *@
+
+@if (string.IsNullOrEmpty(Results))
+{
+    <span class="text-muted">—</span>
+}
+else
+{
+    <span style="white-space:nowrap">
+        @foreach (var c in Results)
+        {
+            <span class="badge me-1" style="width:1.6em; background:@(c == 'W' ? "#2e7d32" : c == 'L' ? "#c62828" : "#757575")">@c</span>
+        }
+    </span>
+}
+
+@code {
+    [Parameter] public string? Results { get; set; }
+}
