@@ -3,6 +3,7 @@
 @using Microsoft.EntityFrameworkCore
 @using NflPicks.Web.Data
 @using NflPicks.Web.Data.Entities
+@using NflPicks.Web.Services
 @inject IDbContextFactory<PicksDbContext> DbFactory
 
 <PageTitle>Week setup</PageTitle>
@@ -12,11 +13,11 @@
 <div class="row g-2 mb-3" style="max-width:720px">
     <div class="col-auto">
         <label class="form-label">Season</label>
-        <input class="form-control" type="number" @bind="seasonYear" style="width:110px" />
+        <input class="form-control" type="number" @bind="seasonYear" @bind:after="OnWeekChanged" style="width:110px" />
     </div>
     <div class="col-auto">
         <label class="form-label">Type</label>
-        <select class="form-select" @bind="seasonType" style="width:120px">
+        <select class="form-select" @bind="seasonType" @bind:after="OnWeekChanged" style="width:120px">
             <option value="1">Pre</option>
             <option value="2">Regular</option>
             <option value="3">Post</option>
@@ -24,11 +25,15 @@
     </div>
     <div class="col-auto">
         <label class="form-label">Week</label>
-        <input class="form-control" type="number" @bind="weekNumber" style="width:90px" />
+        <input class="form-control" type="number" @bind="weekNumber" @bind:after="OnWeekChanged" style="width:90px" />
     </div>
     <div class="col-auto">
         <label class="form-label">Sunday date</label>
         <input class="form-control" type="date" @bind="sundayDate" />
+        @if (sundayDate.DayOfWeek != DayOfWeek.Sunday)
+        {
+            <div class="form-text" style="color:#b00">That's a @sundayDate.DayOfWeek, not a Sunday.</div>
+        }
     </div>
     <div class="col-auto">
         <label class="form-label">Pool size</label>
@@ -218,7 +223,11 @@
     private static readonly Slot[] Slots =
     [
         new("wed2015", "Wed 8:15p", -4, 20, 15),
+        // Thanksgiving tripleheader: Detroit early, Dallas late, then night.
+        new("thu1230", "Thu 12:30p", -3, 12, 30),
+        new("thu1630", "Thu 4:30p", -3, 16, 30),
         new("thu2015", "Thu 8:15p", -3, 20, 15),
+        new("thu2020", "Thu 8:20p", -3, 20, 20),
         new("fri1500", "Fri 3:00p", -2, 15,  0),
         new("sat1300", "Sat 1:00p", -1, 13,  0),
         new("sat1630", "Sat 4:30p", -1, 16, 30),
@@ -267,6 +276,33 @@
     {
         await using var db = await DbFactory.CreateDbContextAsync();
         teams = await db.Teams.OrderBy(t => t.EspnAbbr).ToListAsync();
+
+        // Open on the week you most likely came here for: the current one
+        // while it still needs scores, otherwise the next one.
+        var key = await WeekDefaults.ForSetupAsync(db);
+        if (key is null) return;
+
+        (seasonYear, seasonType, weekNumber) = (key.SeasonYear, key.SeasonType, key.WeekNumber);
+        sundayDate = await WeekDefaults.SundayForAsync(db, key) ?? sundayDate;
+
+        await LoadWeek();
+    }
+
+    /// <summary>
+    /// Changing season, type or week re-derives the Sunday from the games
+    /// already stored, then loads. The date box stays editable for the odd
+    /// week the projection gets wrong.
+    /// </summary>
+    private async Task OnWeekChanged()
+    {
+        await using (var db = await DbFactory.CreateDbContextAsync())
+        {
+            var sunday = await WeekDefaults.SundayForAsync(
+                db, new WeekDefaults.WeekKey(seasonYear, seasonType, weekNumber));
+            if (sunday is not null) sundayDate = sunday.Value;
+        }
+
+        await LoadWeek();
     }
 
     private void AddRow() => rows.Add(new Row());
@@ -315,22 +351,7 @@
                 // earliest one: games looked days away from the wrong anchor,
                 // so the "nearest" slot was whichever came first in the list.
                 if (games.Count > 0)
-                {
-                    var etDates = games
-                        .Select(g => TimeZoneInfo.ConvertTimeFromUtc(
-                            DateTime.SpecifyKind(g.KickoffUtc, DateTimeKind.Utc), Et).Date)
-                        .ToList();
-
-                    var sunday = etDates.FirstOrDefault(d => d.DayOfWeek == DayOfWeek.Sunday);
-
-                    if (sunday == default)
-                    {
-                        sunday = etDates.Min();
-                        while (sunday.DayOfWeek != DayOfWeek.Sunday) sunday = sunday.AddDays(1);
-                    }
-
-                    sundayDate = sunday;
-                }
+                    sundayDate = WeekDefaults.SundayOf(games.Select(g => g.KickoffUtc));
 
                 foreach (var g in games)
                 {
@@ -458,7 +479,7 @@
 
     private string NearestSlot(DateTime etTime)
     {
-        var best = Slots[4];
+        var best = Slots[0];
         var bestDiff = int.MaxValue;
 
         foreach (var s in Slots)

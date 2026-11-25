@@ -21,6 +21,8 @@ public partial class Pick
 
     public string? Note { get; set; }
 
+    public decimal? PredictedMarginHome { get; set; }
+
     public virtual Entrant Entrant { get; set; } = null!;
 
     public virtual Game Game { get; set; } = null!;

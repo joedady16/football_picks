@@ -26,6 +26,13 @@ at its own kickoff, matching the pool's rules. Changes are logged to
 `pick_change` with hours remaining, so "do my second thoughts beat my first
 instinct" becomes answerable eventually.
 
+Fill **Wins by** with your predicted margin for the side you took. The page
+shows the edge against the line, and `/season` splits your record by edge
+size, which answers "are my strongest opinions my best picks".
+
+Both `/week` and `/picks` open on the right week by themselves, and changing
+the week number on `/week` sets the Sunday from the games already stored.
+
 **Sunday night / Monday** — `/week`, enter final scores. Both scores or neither;
 filling both marks the game final and triggers grading.
 

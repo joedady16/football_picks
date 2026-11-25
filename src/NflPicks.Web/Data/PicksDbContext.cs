@@ -148,6 +148,9 @@ public partial class PicksDbContext : DbContext
             entity.Property(e => e.GameId).HasColumnName("game_id");
             entity.Property(e => e.Note).HasColumnName("note");
             entity.Property(e => e.PickedTeamId).HasColumnName("picked_team_id");
+            entity.Property(e => e.PredictedMarginHome)
+                .HasPrecision(4, 1)
+                .HasColumnName("predicted_margin_home");
             entity.Property(e => e.Source)
                 .HasDefaultValueSql("'manual'::text")
                 .HasColumnName("source");
